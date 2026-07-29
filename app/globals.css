@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-rajdhani: "Rajdhani", ui-sans-serif, system-ui, sans-serif;
+  --font-plex-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-inter: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  * {
+    @apply border-obsidian-600;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #1d2430;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #27F4D2;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply relative bg-obsidian-800/60 backdrop-blur-md border border-white/[0.06] rounded-xl shadow-inset-panel;
+  }
+  .glass-panel::before {
+    content: "";
+    @apply absolute inset-0 rounded-xl pointer-events-none;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 40%);
+  }
+  .neon-text-cyan {
+    @apply text-team-mercedes;
+    text-shadow: 0 0 12px rgba(39, 244, 210, 0.55);
+  }
+  .label-mono {
+    @apply font-mono text-[10.5px] uppercase tracking-[0.12em] text-slate-500;
+  }
+  .section-title {
+    @apply font-display font-bold text-xl md:text-2xl tracking-tight text-slate-100;
+  }
+}

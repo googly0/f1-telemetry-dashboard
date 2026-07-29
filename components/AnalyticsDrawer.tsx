@@ -1,0 +1,99 @@
+"use client";
+
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ChevronDown, BrainCircuit, Database } from "lucide-react";
+
+interface AnalyticsDrawerProps {
+  onToggle?: (variant: "confirm") => void;
+}
+
+const WEIGHTS = [
+  { label: "Car / Team Strength", weight: 0.7, description: "Rebuilt mostly from that season's own race results — new regulations reset who has the fastest car, so this carries only a small decayed memory from the year before (and an even smaller one in known regulation-overhaul years like 2017, 2022, 2026)." },
+  { label: "Driver Skill (Elo)", weight: 0.3, description: "A long-run Elo rating built from every classified finish since 2015, decayed so recent seasons count far more than old ones — plus a bounded in-season adjustment based on real points earned versus your own teammate, since teammates share a car rating and career Elo alone reacts too slowly to a driver clearly outperforming their teammate right now." },
+];
+
+export default function AnalyticsDrawer({ onToggle }: AnalyticsDrawerProps) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="glass-panel overflow-hidden">
+      <button
+        onClick={() => {
+          setOpen((v) => !v);
+          onToggle?.("confirm");
+        }}
+        className="w-full flex items-center justify-between px-5 py-4 md:px-6 md:py-5 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <BrainCircuit size={16} className="text-slate-400" />
+          <h2 className="section-title">How This Model Actually Works</h2>
+        </div>
+        <motion.div animate={{ rotate: open ? 180 : 0 }} transition={{ duration: 0.25 }}>
+          <ChevronDown size={18} className="text-slate-500" />
+        </motion.div>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="px-5 md:px-6 pb-6 pt-1 grid md:grid-cols-2 gap-6">
+              <div>
+                <div className="label-mono mb-3 flex items-center gap-1.5">
+                  <Database size={11} /> DATA & SIMULATION
+                </div>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Every race prediction on this dashboard is a fresh Monte Carlo simulation (6,000
+                  runs) sampled via the Gumbel-max trick — an exact way to draw finishing orders from
+                  a Plackett-Luce ranking model — using real Elo and team-strength ratings computed
+                  from race results, 2015–2026. Reliability is modeled from each team&apos;s actual
+                  DNF rate over the last two seasons. Nothing here is randomly generated to look
+                  plausible; it&apos;s a deterministic function of real historical results.
+                </p>
+                <p className="text-xs text-slate-500 leading-relaxed mt-3">
+                  This is a hand-specified blend, not a trained ML model — so the numbers on the
+                  right are the actual weights used to combine the two ratings, not empirically
+                  fitted &quot;feature importances.&quot;
+                </p>
+              </div>
+
+              <div>
+                <div className="label-mono mb-3">MODEL WEIGHTING (REAL)</div>
+                <div className="space-y-3">
+                  {WEIGHTS.map((f) => (
+                    <div key={f.label} title={f.description}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-slate-300">{f.label}</span>
+                        <span className="font-mono text-[11px] text-slate-500">{Math.round(f.weight * 100)}%</span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-obsidian-700 overflow-hidden">
+                        <motion.div
+                          className="h-full rounded-full bg-team-mercedes"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${f.weight * 100}%` }}
+                          transition={{ duration: 0.6, ease: "easeOut" }}
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{f.description}</p>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-slate-600 mt-4 leading-relaxed">
+                  No track-specific modeling yet — every circuit uses the same combined strength
+                  score. Grid position, weather, and per-circuit driver history aren&apos;t factored
+                  in today.
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
