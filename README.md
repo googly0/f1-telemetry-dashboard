@@ -1,8 +1,8 @@
 # F1 Pit Wall Telemetry Dashboard
 
-A cyberpunk / pit-wall-telemetry-themed React dashboard (Next.js App Router + Tailwind + Framer Motion + Recharts) visualizing **real** F1 race predictions — Elo driver ratings + team-strength ratings + a Monte Carlo (Plackett-Luce) race simulator, running on actual 2015–2026 race data. No random/mock numbers.
+A cyberpunk / pit-wall-telemetry-themed React dashboard (Next.js App Router + Tailwind + Framer Motion + Recharts) showing **real** F1 race predictions from two Plackett-Luce models and a Monte Carlo race simulator, built on actual 2015–2026 race data through the 2026 Azerbaijan GP. No random or mock numbers.
 
-**Backtested:** walk-forward on 225 races (2016–2026), predicting each race only from ratings that existed before it. Weights are fitted on 2016–2023 and scored on 2024–2026, which the fit never saw. See [Backtest](#backtest).
+**Backtested honestly:** weights are fitted on 2016–2023, then every race from 2024 to Azerbaijan 2026 (63 races) is predicted blind, using only information available before lights out. On those races the race-day model put the eventual winner in its **top 3 picks 90.5%** of the time, and its favourite won **57.1%**. See [Backtest](#backtest), including the models that lost.
 
 ## Stack
 
@@ -22,17 +22,20 @@ npm install
 npm run dev      # http://localhost:3000
 ```
 
-## The real predictor (`lib/predictor.ts`)
+## The predictor
 
+Two models, both **Plackett-Luce** (a driver's chance of beating everyone still in the race is proportional to exp(strength)), with strength a weighted sum of pre-race features:
 
-1. **Driver skill rating** — long-run Elo across every classified finish since 2015, decayed so recent seasons count more.
-2. **Team/car strength rating** — rebuilt mostly from that season's own results, since regulation changes reset who has the fastest car.
-3. **Team recent form** — decayed points the team scored over its last 6 races. Team ratings move slowly; this catches a car that has just got quicker (e.g. McLaren in 2024).
-4. **Combined strength** = (34.6% driver Elo + 65.4% team rating) × temperature 1.203 + 0.232 × team recent form. All three numbers are **fitted** by maximising the Plackett-Luce likelihood of real top-10 finishing orders on 2016–2023 (`python scripts/backtest.py --fit`).
-5. **Reliability** — each team's actual DNF rate over the last two seasons.
-6. **Simulation** — race outcomes are sampled via the Gumbel-max trick, an exact way to draw from a Plackett-Luce ranking distribution, run 6,000 times per race to get real position probabilities.
+| | Race-day model | Pre-qualifying model |
+|---|---|---|
+| Used for | Any race once qualifying is done (toggle on the podium card) | Races not yet qualified, and the season / title simulation |
+| Features | Starting grid, pole, qualifying gap to pole, sprint result, team points / qualifying pace / places gained over the last 6 races, form vs teammate | Driver Elo, team Elo, plus the same this-season form features |
+| Fitted on | Race winners, 2016–2023 | Whole finishing order, position *j* weighted 0.3^*j*, 2016–2023 |
 
-`lib/data/all_years.json` holds the precomputed per-round rating snapshots (driver Elo, team rating, actual points, actual finishing order) for every season 2015–2026 — same pipeline as the sibling static-dashboard repo's `scripts/build_all_years.py`.
+- **Retirements** are modelled separately: each car retires with its team's DNF rate over its last ~30 starts (shrunk toward 12%), then the finishers are ordered by Plackett-Luce.
+- **Simulation:** 6,000 races per view via the Gumbel-max trick (an exact Plackett-Luce sample). The Python backtest runs the identical process; the TypeScript and Python win probabilities agree to within simulation noise.
+- **No look-ahead:** every feature for race *r* uses only races before *r*, plus that weekend's qualifying, grid and sprint. Title odds "as of round X" only use what was known after round X.
+- **Pipeline:** `scripts/build_all_years.py` turns the Kaggle CSVs into `lib/data/all_years.json` (ratings, points, results and one model strength per driver per round). `scripts/f1model.py` holds the shared feature and model code.
 
 ### What's real vs. what's honestly still illustrative
 
@@ -42,23 +45,35 @@ npm run dev      # http://localhost:3000
 - **Circuit track outlines** — still stylized SVG shapes (hand-drawn for Monaco, Silverstone, Spa, Monza, Suzuka, Interlagos; generic fallback loop for the rest of the calendar). This is clearly a decorative/illustrative element in the UI — no prediction depends on it — but it's not real circuit geometry.
 - **No track-specific modeling** — every circuit uses the same combined strength score. Monaco doesn't get a qualifying-pace bonus, Spa doesn't get a power-unit bonus, etc. This is a real limitation, not hidden anywhere — the Analytics drawer says it outright.
 
-### A finding worth knowing about
-
-Teammates share the same team-strength rating, so career Elo alone separated them — which had the model favouring **George Russell over Kimi Antonelli** in 2026 even while Antonelli led the championship. A bounded in-season points-vs-teammate adjustment (±200 Elo) now handles this.
-
 ## Backtest
 
-`python scripts/backtest.py` (needs numpy; `--fit` also needs scipy). Full race-by-race results: [`docs/F1_Backtest.xlsx`](docs/F1_Backtest.xlsx).
+```bash
+pip install numpy pandas scipy openpyxl
+python scripts/backtest.py --xlsx docs/F1_Backtest.xlsx   # runs from the committed data/features.csv.gz
+```
 
-| Held-out 2024–2026 (59 races) | Previous hand-tuned | Current (fitted) | Blind guess |
-|---|---|---|---|
-| Win log-loss (lower = better) | 2.072 | **1.956** | 3.108 |
-| Favourite actually wins | 22.0% | 22.0% | ~4.5% |
-| Podium drivers predicted | 56.5% | **58.2%** | — |
+**Protocol.** Features and settings were chosen on *rolling validation* (each season 2018–2023 predicted by a model fit only on earlier seasons). Then the chosen models were fit once on 2016–2023 and scored on 2024–2026 (63 races, through Azerbaijan). Race-by-race results: [`docs/F1_Backtest.xlsx`](docs/F1_Backtest.xlsx).
 
-Win probabilities are calibrated: drivers given 20–40% won 29% of the time when predicted 27% on average. A favourite winning only ~1 race in 4–5 is F1, not a broken model — 2024 alone had seven different winners.
+**Model arena**: every candidate, including the losers:
 
-**Known limits:** the model predicts *before qualifying* (no grid position), has no track-specific effects, and the Elo/team ratings themselves are built outside this repo by `build_all_years.py`. Adding grid position is the largest expected improvement.
+| Model | Validation 2018–23: winner in top 3 | Val log-loss | **Test 2024–26: favourite wins** | **Winner in top 3** | **Podium** | **Test log-loss** |
+|---|---|---|---|---|---|---|
+| A. Grid only | 85.6% | 1.552 | 58.7% | 90.5% | 68.3% | 1.324 |
+| B. Grid + quali gap + sprint | 86.4% | 1.497 | 55.6% | 88.9% | 67.2% | 1.419 |
+| **C. Race-day (shipped)**: B + this-season form | 88.8% | 1.367 | **57.1%** | **90.5%** | **69.3%** | 1.360 |
+| D. Race-day + Elo history | 90.4% | **1.184** | 46.0% | 87.3% | 64.0% | 1.443 |
+| E. Pre-quali: this-season form only | 80.8% | 1.761 | 20.6% | 65.1% | 50.3% | 1.987 |
+| **F. Pre-quali (shipped)**: form + Elo | 82.4% | 1.409 | 28.6% | 66.7% | 54.5% | 1.866 |
+
+Uniform guessing scores a win log-loss of about 3.1. The previous dashboard model (no qualifying data) had a favourite-wins rate of 22% on the same seasons.
+
+**What the arena shows:**
+- **The starting grid is most of the signal.** No pre-race model here reliably beats "the grid only" on 2024–26. The shipped race-day model ties it (log-loss difference +0.04 ± 0.08) and beats it clearly on 2018–23.
+- **Model D won validation and lost the test.** Elo history learned to trust dominant cars (Mercedes, then Red Bull). That broke when McLaren rose in 2024 and the 2026 rules reset the order, with D calling only 40% of 2026 winners against 67% for C. So the race-day model uses this-season form only.
+- **Pre-qualifying prediction is genuinely hard.** With no grid, the favourite won 29% of held-out races, and only 20% in 2026, where Elo carried 2025's order into a reset year.
+- **Tried and dropped** (they hurt rolling validation): green-flag race pace from lap times, a per-circuit grid-importance term, LightGBM LambdaRank (worse log-loss than the linear Plackett-Luce, since there are only ~170 training races).
+
+**On "85% accuracy":** calling the exact winner tops out near 55–60% for any pre-race model in this era, because the pole-sitter alone wins about 57% of races. The honest 85%+ number is *winner among the model's top 3 picks*: 90.5% held out.
 
 ## Project structure
 
@@ -69,14 +84,19 @@ components/
   Dashboard.tsx        # orchestrator: year/round state, useMemo → buildRacePrediction()
   Header.tsx             # season + real GP-round selector, sound toggle, confidence gauge
   ConfidenceGauge.tsx
-  PodiumPanel.tsx        # real predicted P1/P2/P3 + actual result comparison for past rounds
+  PodiumPanel.tsx        # predicted podium, pre-quali / race-day toggle, grid slots, most likely winners
   HeadToHeadPanel.tsx     # Driver A vs B + Recharts radar, real Elo/rating-derived metrics
   CircuitMap.tsx          # stylized SVG track (decorative only)
   PointsProgression.tsx    # real cumulative points, dashed projection past the current round
-  AnalyticsDrawer.tsx      # honest documentation of the real model's weighting
+  AnalyticsDrawer.tsx      # model description + held-out backtest table
 lib/
   types.ts               # AllYearsData (real dataset shape) + RacePrediction (derived output)
-  data/all_years.json      # real per-round rating snapshots, 2015-2026 (~190KB)
+  data/all_years.json      # per-round ratings, points, results and model strengths, 2015-2026
+scripts/
+  f1model.py               # features (Elo, form, qualifying), Plackett-Luce fit, simulation
+  build_all_years.py       # Kaggle CSVs -> lib/data/all_years.json + data/features.csv.gz
+  backtest.py, make_xlsx.py  # model arena + docs/F1_Backtest.xlsx
+data/features.csv.gz       # pre-race feature table, so the backtest runs without the raw data
   predictor.ts             # the actual Monte Carlo engine
   f1Data.ts                # typed data loader + circuit shape matcher
   teamColors.ts             # real constructor name -> color, covers all historical teams
@@ -85,11 +105,15 @@ lib/
 
 ## Regenerating the data
 
-`lib/data/all_years.json` comes from the same pipeline as the companion static-dashboard repo. To refresh it with newer race results, update the raw Ergast-format CSVs and rerun `scripts/build_all_years.py` there, then copy the output here:
+Data source: the Kaggle dataset [`jtrotman/formula-1-race-data`](https://www.kaggle.com/datasets/jtrotman/formula-1-race-data) (Ergast-format CSVs).
 
 ```bash
-cp path/to/other-repo/data/all_years.json lib/data/all_years.json
+pip install kagglehub numpy pandas scipy
+python -c "import kagglehub; print(kagglehub.dataset_download('jtrotman/formula-1-race-data'))"
+python scripts/build_all_years.py --data <folder printed above>
 ```
+
+Two source quirks the pipeline handles: from 2025 the dataset fills `position` for retired cars (classification is read from `positionText` instead), and two races have no starting grid (2025 Qatar, 2026 Azerbaijan), where qualifying position is used.
 
 ## Fonts
 
@@ -101,10 +125,11 @@ Loaded via a `<link>` tag in `app/layout.tsx` rather than `next/font/google`, so
 
 ## Known limitations / next steps
 
-- **No track-specific modeling** (see above) — the natural next step if you want to push accuracy further.
-- **No 3D car model** or **WebSocket live telemetry** — both flagged as stretch goals in the original spec, not built here; `PodiumPanel.tsx` and `Dashboard.tsx` are the natural mounting points respectively.
-- Circuit list has curated art for 6 circuits; the rest of the real calendar uses a generic fallback shape — trivial to extend in `lib/f1Data.ts`.
-- Accessibility pass not done — elements are native HTML (keyboard-accessible by default) but contrast/ARIA labeling hasn't been audited.
+- **Not modelled:** weather, practice pace, tyre strategy, safety cars, per-circuit effects. Practice long-run pace is the most promising missing signal, but it isn't in the dataset.
+- **Pre-qualifying model is weak after regulation resets**, because Elo carries the old order forward. A better pre-season prior (e.g. testing pace) would help.
+- **Forward test:** the remaining 2026 races (from round 16) are untouched by any fitting or model choice. Rebuild after each race and check them.
+- **Mid-season team changes:** a driver who switched teams is shown with their latest team in that season.
+- Circuit art is curated for 6 circuits; the rest use a generic shape. No 3D car or live telemetry.
 
 ## License
 

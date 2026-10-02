@@ -38,10 +38,35 @@ export interface YearData {
   n_rounds: number;
   data_through: number;
   season_complete: boolean;
+  // model outputs, one entry per round (index round-1); null = not available for that round
+  pre_utility_by_round: Record<string, (number | null)[]>; // pre-qualifying model strength
+  post_utility_by_round: Record<string, (number | null)[]>; // race-day model strength (needs qualifying)
+  grid_by_round: Record<string, (number | null)[]>; // starting grid
+  dnf_rate_by_round: Record<string, (number | null)[]>; // constructorId -> P(retire) entering the round
+}
+
+export type PredictionMode = "race-day" | "pre-qualifying";
+
+export interface ModelBacktest {
+  hit: number; // favourite actually won
+  top3: number; // winner was among the model's 3 most likely winners
+  podium: number; // share of predicted podium drivers who finished on the podium
+  ll: number; // mean -ln P(actual winner)
+}
+
+export interface ModelInfo {
+  trained_on: string;
+  tested_on: string;
+  data_through: string;
+  built: string;
+  race_day: { features: string[]; weights: number[] };
+  pre_quali: { features: string[]; weights: number[] };
+  backtest: { race_day: ModelBacktest; pre_quali: ModelBacktest; grid_only: ModelBacktest; races: number };
 }
 
 export interface AllYearsData {
   years: Record<string, YearData>;
+  model: ModelInfo;
 }
 
 /* --------------------------- derived prediction types --------------------------- */
@@ -73,6 +98,10 @@ export interface RacePrediction {
   actualResult: { position: 1 | 2 | 3; driverId: string }[] | null; // real result, if this round already happened
   modelConfidence: number; // winner's win probability for this specific race
   podium: PodiumEntry[];
+  winProbabilities: { driverId: string; probability: number }[]; // top 5 most likely winners
+  predictionMode: PredictionMode; // which model produced this race's numbers
+  qualifyingAvailable: boolean; // true once this round's qualifying/grid is known
+  grid: Record<string, number | null>; // starting grid (race-day mode)
   driverPool: string[]; // full grid for the selected year, ordered by combined strength
   headToHead: Record<string, Record<string, HeadToHeadMetric[]>>;
   pointsProgression: PointsProgressionPoint[];

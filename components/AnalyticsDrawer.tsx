@@ -2,20 +2,42 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, BrainCircuit, Database } from "lucide-react";
-import { MODEL_PARAMS, BACKTEST } from "@/lib/predictor";
+import { ChevronDown, BrainCircuit, Database, Target } from "lucide-react";
+import { MODEL_INFO } from "@/lib/predictor";
+import { pct } from "@/lib/utils";
 
 interface AnalyticsDrawerProps {
   onToggle?: (variant: "confirm") => void;
 }
 
-const WEIGHTS = [
-  { label: "Car / Team Strength", weight: MODEL_PARAMS.teamWeight, description: "Rebuilt mostly from that season's own race results — new regulations reset who has the fastest car, so this carries only a small decayed memory from the year before (and an even smaller one in known regulation-overhaul years like 2017, 2022, 2026) — plus a fast-reacting bonus for points the team scored in its last 6 races, so the model notices a car that has just got quicker." },
-  { label: "Driver Skill (Elo)", weight: MODEL_PARAMS.driverWeight, description: "A long-run Elo rating built from every classified finish since 2015, decayed so recent seasons count far more than old ones — plus a bounded in-season adjustment based on real points earned versus your own teammate, since teammates share a car rating and career Elo alone reacts too slowly to a driver clearly outperforming their teammate right now." },
+const FEATURE_LABELS: Record<string, string> = {
+  x_grid: "starting grid position",
+  x_pole: "pole position",
+  x_qgap: "qualifying gap to pole",
+  x_sprint: "sprint result (sprint weekends)",
+  x_team_form: "team points over the last 6 races",
+  x_team_qgap: "team qualifying pace over the last 6 races",
+  x_team_gain: "places the team gains on race day",
+  x_tm: "form vs own teammate",
+  x_elo_d: "driver Elo rating",
+  x_elo_t: "team Elo rating",
+};
+
+const ROWS: { key: "hit" | "top3" | "podium" | "ll"; label: string; fmt: (v: number) => string }[] = [
+  { key: "hit", label: "Favourite actually wins", fmt: (v) => pct(v) },
+  { key: "top3", label: "Winner in model's top 3", fmt: (v) => pct(v) },
+  { key: "podium", label: "Podium drivers predicted", fmt: (v) => pct(v) },
+  { key: "ll", label: "Win log-loss (lower = better)", fmt: (v) => v.toFixed(2) },
 ];
 
 export default function AnalyticsDrawer({ onToggle }: AnalyticsDrawerProps) {
   const [open, setOpen] = useState(false);
+  const bt = MODEL_INFO.backtest;
+  const cols = [
+    { name: "Race-day", data: bt.race_day },
+    { name: "Pre-quali", data: bt.pre_quali },
+    { name: "Grid only", data: bt.grid_only },
+  ];
 
   return (
     <div className="glass-panel overflow-hidden">
@@ -47,51 +69,59 @@ export default function AnalyticsDrawer({ onToggle }: AnalyticsDrawerProps) {
             <div className="px-5 md:px-6 pb-6 pt-1 grid md:grid-cols-2 gap-6">
               <div>
                 <div className="label-mono mb-3 flex items-center gap-1.5">
-                  <Database size={11} /> DATA & SIMULATION
+                  <Database size={11} /> TWO MODELS, ONE SIMULATOR
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed">
-                  Every race prediction on this dashboard is a fresh Monte Carlo simulation (6,000
-                  runs) sampled via the Gumbel-max trick — an exact way to draw finishing orders from
-                  a Plackett-Luce ranking model — using real Elo and team-strength ratings computed
-                  from race results, 2015–2026. Reliability is modeled from each team&apos;s actual
-                  DNF rate over the last two seasons. Nothing here is randomly generated to look
-                  plausible; it&apos;s a deterministic function of real historical results.
+                  <span className="text-slate-200">Race-day model</span>, used once qualifying is done:{" "}
+                  {MODEL_INFO.race_day.features.map((f) => FEATURE_LABELS[f] ?? f).join(", ")}.
+                </p>
+                <p className="text-xs text-slate-400 leading-relaxed mt-2">
+                  <span className="text-slate-200">Pre-qualifying model</span>, used before the grid is set and for the
+                  season simulation: {MODEL_INFO.pre_quali.features.map((f) => FEATURE_LABELS[f] ?? f).join(", ")}.
                 </p>
                 <p className="text-xs text-slate-500 leading-relaxed mt-3">
-                  The weights on the right were fitted, not hand-picked: they maximise how well the
-                  model explains real finishing orders from 2016–2023, then were checked on 2024–2026
-                  races the fit never saw. On those {BACKTEST.testRaces} held-out races the win log-loss is{" "}
-                  {BACKTEST.winLogLoss.toFixed(2)} (previous hand-tuned model {BACKTEST.previousWinLogLoss.toFixed(2)},
-                  blind guessing {BACKTEST.uniformWinLogLoss.toFixed(2)}; lower is better). F1 is noisy — even a
-                  well-calibrated favourite usually wins well under half the time.
+                  Each race is simulated 6,000 times. Every car can retire at its team&apos;s recent DNF rate, and the
+                  finishers are ordered with the Gumbel-max trick (an exact Plackett-Luce sample). Every input uses only
+                  races run before that one. Weights fitted by maximum likelihood on {MODEL_INFO.trained_on}; data
+                  through {MODEL_INFO.data_through}.
                 </p>
               </div>
 
               <div>
-                <div className="label-mono mb-3">MODEL WEIGHTING (REAL)</div>
-                <div className="space-y-3">
-                  {WEIGHTS.map((f) => (
-                    <div key={f.label} title={f.description}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs text-slate-300">{f.label}</span>
-                        <span className="font-mono text-[11px] text-slate-500">{Math.round(f.weight * 100)}%</span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-obsidian-700 overflow-hidden">
-                        <motion.div
-                          className="h-full rounded-full bg-team-mercedes"
-                          initial={{ width: 0 }}
-                          animate={{ width: `${f.weight * 100}%` }}
-                          transition={{ duration: 0.6, ease: "easeOut" }}
-                        />
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{f.description}</p>
-                    </div>
-                  ))}
+                <div className="label-mono mb-3 flex items-center gap-1.5">
+                  <Target size={11} /> HELD-OUT TEST · {MODEL_INFO.tested_on} · {bt.races} RACES THE FIT NEVER SAW
                 </div>
-                <p className="text-[11px] text-slate-600 mt-4 leading-relaxed">
-                  No track-specific modeling yet — every circuit uses the same combined strength
-                  score. Grid position, weather, and per-circuit driver history aren&apos;t factored
-                  in today.
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-slate-500">
+                      <th className="text-left font-normal pb-2" />
+                      {cols.map((c) => (
+                        <th key={c.name} className="text-right font-mono font-normal pb-2 pl-2">
+                          {c.name}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ROWS.map((r) => (
+                      <tr key={r.key} className="border-t border-white/5">
+                        <td className="py-1.5 text-slate-400">{r.label}</td>
+                        {cols.map((c) => (
+                          <td key={c.name} className="py-1.5 text-right font-mono text-slate-200 pl-2">
+                            {r.fmt(c.data[r.key])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="text-[11px] text-slate-500 mt-3 leading-relaxed">
+                  &quot;Grid only&quot; uses nothing but the starting grid, and it is a tough baseline. The race-day
+                  model ties it on these seasons and beats it clearly on 2018–2023. F1 is noisy: a well-calibrated
+                  favourite still loses around 4 races in 10, so &quot;winner in the top 3&quot; is the fairer headline.
+                </p>
+                <p className="text-[11px] text-slate-600 mt-2 leading-relaxed">
+                  Not modelled: weather, practice pace, tyre strategy, safety cars, per-circuit effects.
                 </p>
               </div>
             </div>

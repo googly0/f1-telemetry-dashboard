@@ -21,16 +21,20 @@ export default function Dashboard() {
   const [round, setRound] = useState(
     defaultYd.season_complete ? defaultYd.n_rounds : Math.min(defaultYd.data_through + 1, defaultYd.n_rounds)
   );
+  const [useQualifying, setUseQualifying] = useState(true);
   const { enabled: soundEnabled, toggle: toggleSound, playClick } = useEngineSound();
 
   const yd = useMemo(() => getYearData(year), [year]);
 
   // -----------------------------------------------------------------------
   // Real engine, not mock data: buildRacePrediction() runs a Monte Carlo
-  // simulation (Gumbel-max Plackett-Luce) over real Elo/team-rating
-  // snapshots for the selected year+round. See lib/predictor.ts.
+  // simulation (Gumbel-max Plackett-Luce) over model strengths computed from
+  // real results for the selected year+round. See lib/predictor.ts.
   // -----------------------------------------------------------------------
-  const prediction = useMemo(() => buildRacePrediction(yd, year, round, 6000), [yd, year, round]);
+  const prediction = useMemo(
+    () => buildRacePrediction(yd, year, round, 6000, useQualifying),
+    [yd, year, round, useQualifying]
+  );
   const circuitShape = useMemo(() => getCircuitShape(prediction.raceName), [prediction.raceName]);
 
   const handleYearChange = (y: number) => {
@@ -72,7 +76,15 @@ export default function Dashboard() {
         >
           <div className="grid grid-cols-1 xl:grid-cols-5 gap-5">
             <div className="xl:col-span-3">
-              <PodiumPanel prediction={prediction} onHover={playClick} />
+              <PodiumPanel
+                prediction={prediction}
+                onHover={playClick}
+                useQualifying={useQualifying}
+                onToggleQualifying={(v) => {
+                  setUseQualifying(v);
+                  playClick("confirm");
+                }}
+              />
             </div>
             <div className="xl:col-span-2">
               <CircuitMap raceName={prediction.raceName} shape={circuitShape} />
@@ -95,7 +107,7 @@ export default function Dashboard() {
       </AnimatePresence>
 
       <footer className="label-mono text-center py-6">
-        REAL MODEL · ELO + TEAM-STRENGTH RATINGS · MONTE CARLO PLACKETT-LUCE SIMULATION · 2015–2026
+        REAL MODEL · GRID + QUALIFYING + FORM + ELO · MONTE CARLO PLACKETT-LUCE SIMULATION · 2015–2026
       </footer>
     </main>
   );
