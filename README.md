@@ -2,7 +2,7 @@
 
 A cyberpunk / pit-wall-telemetry-themed React dashboard (Next.js App Router + Tailwind + Framer Motion + Recharts) visualizing **real** F1 race predictions — Elo driver ratings + team-strength ratings + a Monte Carlo (Plackett-Luce) race simulator, running on actual 2015–2026 race data. No random/mock numbers.
 
-**Verified:** `npm run build` and `npm run start` both run clean — production build compiles, type-checks, and statically generates. Round 10 (Belgian GP) predictions were checked against the real 2026 result (Antonelli/Leclerc/Verstappen — correct).
+**Backtested:** walk-forward on 225 races (2016–2026), predicting each race only from ratings that existed before it. Weights are fitted on 2016–2023 and scored on 2024–2026, which the fit never saw. See [Backtest](#backtest).
 
 ## Stack
 
@@ -24,13 +24,13 @@ npm run dev      # http://localhost:3000
 
 ## The real predictor (`lib/predictor.ts`)
 
-Same model validated in the companion static dashboard:
 
 1. **Driver skill rating** — long-run Elo across every classified finish since 2015, decayed so recent seasons count more.
 2. **Team/car strength rating** — rebuilt mostly from that season's own results, since regulation changes reset who has the fastest car.
-3. **Combined strength** = 30% driver Elo + 70% team rating — this is a hand-specified blend, not a trained model, and the Analytics drawer says so honestly rather than presenting it as ML "feature importance."
-4. **Reliability** — each team's actual DNF rate over the last two seasons.
-5. **Simulation** — race outcomes are sampled via the Gumbel-max trick, an exact way to draw from a Plackett-Luce ranking distribution, run 6,000 times per race to get real position probabilities.
+3. **Team recent form** — decayed points the team scored over its last 6 races. Team ratings move slowly; this catches a car that has just got quicker (e.g. McLaren in 2024).
+4. **Combined strength** = (34.6% driver Elo + 65.4% team rating) × temperature 1.203 + 0.232 × team recent form. All three numbers are **fitted** by maximising the Plackett-Luce likelihood of real top-10 finishing orders on 2016–2023 (`python scripts/backtest.py --fit`).
+5. **Reliability** — each team's actual DNF rate over the last two seasons.
+6. **Simulation** — race outcomes are sampled via the Gumbel-max trick, an exact way to draw from a Plackett-Luce ranking distribution, run 6,000 times per race to get real position probabilities.
 
 `lib/data/all_years.json` holds the precomputed per-round rating snapshots (driver Elo, team rating, actual points, actual finishing order) for every season 2015–2026 — same pipeline as the sibling static-dashboard repo's `scripts/build_all_years.py`.
 
@@ -44,7 +44,21 @@ Same model validated in the companion static dashboard:
 
 ### A finding worth knowing about
 
-Because teammates share the same team-strength rating, the model differentiates them purely on long-run driver Elo — which means it currently favors **George Russell over Kimi Antonelli** for individual remaining 2026 races, even though Antonelli leads the championship. Antonelli's excellent rookie season hasn't had time to fully move his career-long Elo yet. This is a real, disclosed model limitation, not a bug.
+Teammates share the same team-strength rating, so career Elo alone separated them — which had the model favouring **George Russell over Kimi Antonelli** in 2026 even while Antonelli led the championship. A bounded in-season points-vs-teammate adjustment (±200 Elo) now handles this.
+
+## Backtest
+
+`python scripts/backtest.py` (needs numpy; `--fit` also needs scipy). Full race-by-race results: [`docs/F1_Backtest.xlsx`](docs/F1_Backtest.xlsx).
+
+| Held-out 2024–2026 (59 races) | Previous hand-tuned | Current (fitted) | Blind guess |
+|---|---|---|---|
+| Win log-loss (lower = better) | 2.072 | **1.956** | 3.108 |
+| Favourite actually wins | 22.0% | 22.0% | ~4.5% |
+| Podium drivers predicted | 56.5% | **58.2%** | — |
+
+Win probabilities are calibrated: drivers given 20–40% won 29% of the time when predicted 27% on average. A favourite winning only ~1 race in 4–5 is F1, not a broken model — 2024 alone had seven different winners.
+
+**Known limits:** the model predicts *before qualifying* (no grid position), has no track-specific effects, and the Elo/team ratings themselves are built outside this repo by `build_all_years.py`. Adding grid position is the largest expected improvement.
 
 ## Project structure
 

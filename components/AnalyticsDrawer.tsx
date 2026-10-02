@@ -3,14 +3,15 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronDown, BrainCircuit, Database } from "lucide-react";
+import { MODEL_PARAMS, BACKTEST } from "@/lib/predictor";
 
 interface AnalyticsDrawerProps {
   onToggle?: (variant: "confirm") => void;
 }
 
 const WEIGHTS = [
-  { label: "Car / Team Strength", weight: 0.7, description: "Rebuilt mostly from that season's own race results — new regulations reset who has the fastest car, so this carries only a small decayed memory from the year before (and an even smaller one in known regulation-overhaul years like 2017, 2022, 2026)." },
-  { label: "Driver Skill (Elo)", weight: 0.3, description: "A long-run Elo rating built from every classified finish since 2015, decayed so recent seasons count far more than old ones — plus a bounded in-season adjustment based on real points earned versus your own teammate, since teammates share a car rating and career Elo alone reacts too slowly to a driver clearly outperforming their teammate right now." },
+  { label: "Car / Team Strength", weight: MODEL_PARAMS.teamWeight, description: "Rebuilt mostly from that season's own race results — new regulations reset who has the fastest car, so this carries only a small decayed memory from the year before (and an even smaller one in known regulation-overhaul years like 2017, 2022, 2026) — plus a fast-reacting bonus for points the team scored in its last 6 races, so the model notices a car that has just got quicker." },
+  { label: "Driver Skill (Elo)", weight: MODEL_PARAMS.driverWeight, description: "A long-run Elo rating built from every classified finish since 2015, decayed so recent seasons count far more than old ones — plus a bounded in-season adjustment based on real points earned versus your own teammate, since teammates share a car rating and career Elo alone reacts too slowly to a driver clearly outperforming their teammate right now." },
 ];
 
 export default function AnalyticsDrawer({ onToggle }: AnalyticsDrawerProps) {
@@ -57,9 +58,12 @@ export default function AnalyticsDrawer({ onToggle }: AnalyticsDrawerProps) {
                   plausible; it&apos;s a deterministic function of real historical results.
                 </p>
                 <p className="text-xs text-slate-500 leading-relaxed mt-3">
-                  This is a hand-specified blend, not a trained ML model — so the numbers on the
-                  right are the actual weights used to combine the two ratings, not empirically
-                  fitted &quot;feature importances.&quot;
+                  The weights on the right were fitted, not hand-picked: they maximise how well the
+                  model explains real finishing orders from 2016–2023, then were checked on 2024–2026
+                  races the fit never saw. On those {BACKTEST.testRaces} held-out races the win log-loss is{" "}
+                  {BACKTEST.winLogLoss.toFixed(2)} (previous hand-tuned model {BACKTEST.previousWinLogLoss.toFixed(2)},
+                  blind guessing {BACKTEST.uniformWinLogLoss.toFixed(2)}; lower is better). F1 is noisy — even a
+                  well-calibrated favourite usually wins well under half the time.
                 </p>
               </div>
 

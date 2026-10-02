@@ -12,8 +12,59 @@ import type { YearData, RacePrediction, PodiumEntry, HeadToHeadMetric, PointsPro
  * ratings in lib/data/all_years.json.
  * ---------------------------------------------------------------------- */
 
-const WD = 0.3; // driver skill weight
-const WT = 0.7; // car/team strength weight
+/* Model parameters — fitted, not hand-picked. scripts/backtest.py --fit maximises the
+ * Plackett-Luce likelihood of the real top-10 finishing order over 2016–2023 races, then
+ * scores the result on 2024–2026 races it never saw. Previous hand-tuned values were
+ * WD = 0.3, TEMPERATURE = 1, TEAM_FORM_WEIGHT = 0 (test win log-loss 2.072 → 1.956). */
+const WD = 0.346; // driver skill weight
+const WT = 1 - WD; // car/team strength weight
+const TEMPERATURE = 1.203; // >1 sharpens the gap between strong and weak drivers
+const TEAM_FORM_WEIGHT = 0.232; // log-strength bonus per unit of recent team form
+
+/* Team recent form: how many points the team's drivers scored in the last few races
+ * (most recent weighted most), scaled so 1.0 = a win every race. Team ratings update
+ * slowly, which left the model backing Red Bull for all of 2024 after McLaren caught up;
+ * this gives it a fast-reacting signal that only uses races already run. */
+export const MODEL_PARAMS = { driverWeight: WD, teamWeight: WT, temperature: TEMPERATURE, teamFormWeight: TEAM_FORM_WEIGHT };
+/* Held-out backtest (2024–2026, 59 races) — regenerate with: python scripts/backtest.py */
+export const BACKTEST = { testRaces: 59, winLogLoss: 1.956, previousWinLogLoss: 2.072, uniformWinLogLoss: 3.108 };
+
+const RECENT_PTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+const RECENT_WINDOW = 6;
+const RECENT_DECAY = 0.6;
+
+function computeTeamRecentForm(
+  yd: YearData,
+  round: number,
+  driverIds: string[],
+  driverTeam: Record<string, string>
+): Record<string, number> {
+  const prevRounds = Object.keys(yd.race_results)
+    .map(Number)
+    .filter((r) => r < round)
+    .sort((a, b) => a - b)
+    .slice(-RECENT_WINDOW);
+
+  const driverForm: Record<string, number> = {};
+  driverIds.forEach((id) => (driverForm[id] = 0));
+  let weightSum = 0;
+  prevRounds.reverse().forEach((r, k) => {
+    const w = Math.pow(RECENT_DECAY, k);
+    weightSum += w;
+    yd.race_results[String(r)].slice(0, 10).forEach((id, pos) => {
+      if (id in driverForm) driverForm[id] += w * RECENT_PTS[pos];
+    });
+  });
+  if (weightSum > 0) driverIds.forEach((id) => (driverForm[id] /= weightSum));
+
+  const teamForm: Record<string, number> = {};
+  const byTeam: Record<string, string[]> = {};
+  driverIds.forEach((id) => (byTeam[driverTeam[id]] = [...(byTeam[driverTeam[id]] || []), id]));
+  Object.entries(byTeam).forEach(([cid, ids]) => {
+    teamForm[cid] = ids.reduce((s, id) => s + driverForm[id], 0) / ids.length / 25;
+  });
+  return teamForm;
+}
 
 function gumbel(rand: () => number): number {
   return -Math.log(-Math.log(rand()));
@@ -47,6 +98,7 @@ export interface RatingSnapshot {
   driverTeam: Record<string, string>;
   dnfRate: Record<string, number>;
   teammateFormAdj: Record<string, number>; // in-season points-vs-teammate adjustment, elo-scale
+  teamRecentForm: Record<string, number>; // constructorId -> decayed recent points, 1.0 = winning every race
   logScore: Record<string, number>; // what the simulator actually uses: career Elo + form adjustment
 }
 
@@ -96,13 +148,16 @@ export function getRatingSnapshot(yd: YearData, round: number): RatingSnapshot {
     teammateFormAdj[id] = Math.max(-FORM_ELO_CAP, Math.min(FORM_ELO_CAP, raw));
   });
 
+  const teamRecentForm = computeTeamRecentForm(yd, round, driverIds, driverTeam);
+
   const logScore: Record<string, number> = {};
   driverIds.forEach((id) => {
     const adjustedDriverElo = driverElo[id] + teammateFormAdj[id];
     const combined = WD * adjustedDriverElo + WT * teamRating[driverTeam[id]];
-    logScore[id] = (combined * Math.log(10)) / 400;
+    logScore[id] =
+      ((combined * Math.log(10)) / 400) * TEMPERATURE + TEAM_FORM_WEIGHT * (teamRecentForm[driverTeam[id]] ?? 0);
   });
-  return { driverIds, driverElo, teamRating, driverTeam, dnfRate: yd.dnf_rate, teammateFormAdj, logScore };
+  return { driverIds, driverElo, teamRating, driverTeam, dnfRate: yd.dnf_rate, teammateFormAdj, teamRecentForm, logScore };
 }
 
 /** Monte Carlo simulation of a single race, returning exact-position probabilities
