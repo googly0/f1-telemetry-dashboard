@@ -1,19 +1,23 @@
-import type { YearData, RacePrediction, PodiumEntry, HeadToHeadMetric, PointsProgressionPoint } from "./types";
+import type { YearData, RacePrediction, PodiumEntry, HeadToHeadMetric, PointsProgressionPoint, PredictionMode } from "./types";
+import { MODEL_INFO } from "./f1Data";
 
 /* -----------------------------------------------------------------------
- * REAL PREDICTOR ENGINE
+ * PREDICTOR ENGINE
  * -----------------------------------------------------------------------
- * Same model as the validated static dashboard: a driver-skill Elo rating
- * (decayed across all seasons since 2015) blended with a team/car-strength
- * rating (rebuilt mostly from that season's own results), combined into a
- * single strength score and sampled via the Gumbel-max trick — an exact,
- * efficient way to draw from a Plackett-Luce ranking distribution.
- * No random mock numbers: every output here is a function of the real
- * ratings in lib/data/all_years.json.
+ * Two Plackett-Luce models, fitted in Python (scripts/f1model.py) and baked into
+ * lib/data/all_years.json as one strength number per driver per round:
+ *
+ *   RACE-DAY (after qualifying): starting grid, qualifying gap to pole, sprint
+ *     result, and this-season team/teammate form.
+ *   PRE-QUALIFYING: driver + team Elo ratings and this-season form. Used for
+ *     races that haven't had qualifying yet, and for the season simulation.
+ *
+ * Each race is simulated by letting every car retire with its team's recent DNF
+ * rate, then ordering the finishers with the Gumbel-max trick (an exact sample
+ * from Plackett-Luce). The backtest in scripts/backtest.py runs the same process.
  * ---------------------------------------------------------------------- */
 
-const WD = 0.3; // driver skill weight
-const WT = 0.7; // car/team strength weight
+export { MODEL_INFO };
 
 function gumbel(rand: () => number): number {
   return -Math.log(-Math.log(rand()));
@@ -41,68 +45,69 @@ function hashSeed(str: string): number {
 }
 
 export interface RatingSnapshot {
-  driverIds: string[];
-  driverElo: Record<string, number>; // pure career Elo — unchanged, used for head-to-head display
+  driverIds: string[]; // drivers entered in this round (the ones the simulator races)
+  driverElo: Record<string, number>; // driver Elo entering the round (display + pre-qualifying model)
   teamRating: Record<string, number>;
   driverTeam: Record<string, string>;
-  dnfRate: Record<string, number>;
-  teammateFormAdj: Record<string, number>; // in-season points-vs-teammate adjustment, elo-scale
-  logScore: Record<string, number>; // what the simulator actually uses: career Elo + form adjustment
+  dnfRate: Record<string, number>; // constructorId -> P(retire), from races before this one
+  teammateFormAdj: Record<string, number>; // display only: points lead over teammate, elo-scale
+  logScore: Record<string, number>; // Plackett-Luce strength the simulator uses
+  mode: PredictionMode;
+  grid: Record<string, number | null>; // starting grid, when qualifying has happened
 }
 
-const FORM_ELO_PER_POINT = 2.0; // how many Elo points one real points-lead-over-teammate is worth
-const FORM_ELO_CAP = 200; // clamp so a single early-season race can't swing this wildly
+const FORM_ELO_PER_POINT = 2.0;
+const FORM_ELO_CAP = 200;
 
-/** Ratings as they stood entering a given round (index round-1 in the snapshot arrays;
- *  index 0 = preseason. For rounds beyond data_through, this is simply the most recent
- *  known ratings carried forward — i.e. "predict the future using what we know now".
- *
- *  Career Elo alone can't tell two teammates apart quickly: they share the same car
- *  rating, so within a team the *only* differentiator is a career-long rating that
- *  updates slowly. A rookie having a career year (e.g. winning 6 of 11 races) won't
- *  out-rate a veteran teammate on career Elo for a long time, even while clearly
- *  outperforming them right now. To fix that, we add a bounded "in-season form vs
- *  teammate" adjustment based on real points earned this season — the cleanest
- *  same-car, same-machinery comparison available — on top of (not replacing) the
- *  career Elo, purely for the combined prediction score. */
-export function getRatingSnapshot(yd: YearData, round: number): RatingSnapshot {
-  const idx = Math.max(0, Math.min(yd.n_rounds, round - 1));
-  const driverIds = Object.keys(yd.driver_elo_by_round);
-  const driverElo: Record<string, number> = {};
-  const teamRating: Record<string, number> = {};
+export function hasQualifying(yd: YearData, round: number): boolean {
+  const post = yd.post_utility_by_round;
+  if (!post) return false;
+  return Object.values(post).some((arr) => arr[round - 1] !== null && arr[round - 1] !== undefined);
+}
+
+/** Model state entering a round. Uses the race-day model when that round's qualifying is
+ *  known (and `useQualifying` is on); otherwise the pre-qualifying model. Rounds beyond the
+ *  latest data use the most recent state carried forward. */
+export function getRatingSnapshot(yd: YearData, round: number, useQualifying = true): RatingSnapshot {
+  const ri = Math.max(0, Math.min(yd.n_rounds - 1, round - 1)); // per-round arrays (length n_rounds)
+  const ei = Math.max(0, Math.min(yd.n_rounds, round - 1)); // rating arrays (index 0 = pre-season)
+  const mode: PredictionMode = useQualifying && hasQualifying(yd, round) ? "race-day" : "pre-qualifying";
+  const source = mode === "race-day" ? yd.post_utility_by_round : yd.pre_utility_by_round;
+
   const driverTeam: Record<string, string> = {};
   yd.lineup.forEach((l) => (driverTeam[l.driverId] = l.constructorId));
-  driverIds.forEach((id) => (driverElo[id] = yd.driver_elo_by_round[id][idx]));
-  Object.keys(yd.team_rating_by_round).forEach(
-    (cid) => (teamRating[cid] = yd.team_rating_by_round[cid][idx])
-  );
-
-  const teammatesOf: Record<string, string[]> = {};
-  driverIds.forEach((id) => {
-    teammatesOf[driverTeam[id]] = teammatesOf[driverTeam[id]] || [];
-    teammatesOf[driverTeam[id]].push(id);
-  });
-
-  const teammateFormAdj: Record<string, number> = {};
-  driverIds.forEach((id) => {
-    const myPts = yd.driver_points_by_round[id][idx];
-    const teammates = (teammatesOf[driverTeam[id]] || []).filter((t) => t !== id);
-    if (teammates.length === 0) {
-      teammateFormAdj[id] = 0;
-      return;
-    }
-    const teammatePts = teammates.reduce((s, t) => s + yd.driver_points_by_round[t][idx], 0) / teammates.length;
-    const raw = (myPts - teammatePts) * FORM_ELO_PER_POINT;
-    teammateFormAdj[id] = Math.max(-FORM_ELO_CAP, Math.min(FORM_ELO_CAP, raw));
-  });
 
   const logScore: Record<string, number> = {};
-  driverIds.forEach((id) => {
-    const adjustedDriverElo = driverElo[id] + teammateFormAdj[id];
-    const combined = WD * adjustedDriverElo + WT * teamRating[driverTeam[id]];
-    logScore[id] = (combined * Math.log(10)) / 400;
+  const grid: Record<string, number | null> = {};
+  Object.entries(source).forEach(([id, arr]) => {
+    const u = arr[ri];
+    if (u !== null && u !== undefined) {
+      logScore[id] = u;
+      grid[id] = yd.grid_by_round?.[id]?.[ri] ?? null;
+    }
   });
-  return { driverIds, driverElo, teamRating, driverTeam, dnfRate: yd.dnf_rate, teammateFormAdj, logScore };
+  const driverIds = Object.keys(logScore);
+
+  const driverElo: Record<string, number> = {};
+  const teamRating: Record<string, number> = {};
+  driverIds.forEach((id) => (driverElo[id] = yd.driver_elo_by_round[id]?.[ei] ?? 1450));
+  Object.keys(yd.team_rating_by_round).forEach((cid) => (teamRating[cid] = yd.team_rating_by_round[cid][ei]));
+
+  const dnfRate: Record<string, number> = {};
+  Object.keys(yd.dnf_rate).forEach((cid) => (dnfRate[cid] = yd.dnf_rate_by_round?.[cid]?.[ri] ?? yd.dnf_rate[cid]));
+
+  const teammatesOf: Record<string, string[]> = {};
+  driverIds.forEach((id) => (teammatesOf[driverTeam[id]] = [...(teammatesOf[driverTeam[id]] || []), id]));
+  const teammateFormAdj: Record<string, number> = {};
+  driverIds.forEach((id) => {
+    const mates = (teammatesOf[driverTeam[id]] || []).filter((t) => t !== id);
+    if (mates.length === 0) return (teammateFormAdj[id] = 0);
+    const myPts = yd.driver_points_by_round[id]?.[ei] ?? 0;
+    const matePts = mates.reduce((s, t) => s + (yd.driver_points_by_round[t]?.[ei] ?? 0), 0) / mates.length;
+    teammateFormAdj[id] = Math.max(-FORM_ELO_CAP, Math.min(FORM_ELO_CAP, (myPts - matePts) * FORM_ELO_PER_POINT));
+  });
+
+  return { driverIds, driverElo, teamRating, driverTeam, dnfRate, teammateFormAdj, logScore, mode, grid };
 }
 
 /** Monte Carlo simulation of a single race, returning exact-position probabilities
@@ -318,9 +323,12 @@ function simulateSeasonChampionship(
   yd.lineup.forEach((l) => (driverTeam[l.driverId] = l.constructorId));
   const constructorIds = Array.from(new Set(driverIds.map((id) => driverTeam[id])));
 
-  const remaining = yd.rounds.filter((r) => r.round > round);
+  // Real points are known only through data_through. Viewing a future round must still
+  // simulate every race not yet run (including the selected one), not skip them.
+  const known = Math.min(round, yd.data_through, yd.n_rounds);
+  const remaining = yd.rounds.filter((r) => r.round > known);
   const basePts: Record<string, number> = {};
-  driverIds.forEach((id) => (basePts[id] = yd.driver_points_by_round[id][Math.min(round, yd.n_rounds)]));
+  driverIds.forEach((id) => (basePts[id] = yd.driver_points_by_round[id][known]));
 
   if (remaining.length === 0) {
     // season's over — "odds" collapse to who actually won
@@ -341,37 +349,32 @@ function simulateSeasonChampionship(
   driverIds.forEach((id) => (driverChampCount[id] = 0));
   constructorIds.forEach((cid) => (teamChampCount[cid] = 0));
 
-  // precompute rating snapshots per remaining round once (not per sim — ratings don't change per sim)
-  const roundSnaps = remaining.map((r) => ({ round: r.round, sprint: r.sprint, snap: getRatingSnapshot(yd, r.round) }));
+  // Every remaining race uses the pre-qualifying model as it stood after round `known`, so title odds
+  // "as of round X" never use ratings or form from later races.
+  const nextSnap = getRatingSnapshot(yd, Math.min(known + 1, yd.n_rounds), false);
+  const roundSnaps = remaining.map((r) => ({ round: r.round, sprint: r.sprint, snap: nextSnap }));
 
   for (let s = 0; s < nSim; s++) {
     const simPts: Record<string, number> = { ...basePts };
     for (const { round: r, sprint, snap } of roundSnaps) {
       const seed = `${r}-champsim-${s}`;
       const rand = mulberry32(hashSeed(seed));
-      const noisy = driverIds.map((id) => ({ id, v: snap.logScore[id] + gumbel(rand) }));
-      noisy.sort((a, b) => b.v - a.v);
-      const dnf = new Set<string>();
-      driverIds.forEach((id) => {
-        if (rand() < (snap.dnfRate[snap.driverTeam[id]] ?? 0.12)) dnf.add(id);
-      });
-      const classified = noisy.filter((d) => !dnf.has(d.id));
-      classified.forEach((d, pos) => {
-        if (pos < yd.gp_points.length) simPts[d.id] += yd.gp_points[pos];
-      });
-      if (sprint && yd.sprint_points) {
-        const rand2 = mulberry32(hashSeed(`${seed}-sprint`));
-        const noisy2 = driverIds.map((id) => ({ id, v: snap.logScore[id] + gumbel(rand2) }));
-        noisy2.sort((a, b) => b.v - a.v);
-        const dnf2 = new Set<string>();
-        driverIds.forEach((id) => {
-          if (rand2() < (snap.dnfRate[snap.driverTeam[id]] ?? 0.12)) dnf2.add(id);
+      const raced = (rng: () => number, scale: number[]) => {
+        // only drivers entered in this round race; retired cars score nothing
+        const noisy = snap.driverIds.map((id) => ({ id, v: snap.logScore[id] + gumbel(rng) }));
+        noisy.sort((a, b) => b.v - a.v);
+        const out = new Set<string>();
+        snap.driverIds.forEach((id) => {
+          if (rng() < (snap.dnfRate[snap.driverTeam[id]] ?? 0.12)) out.add(id);
         });
-        const classified2 = noisy2.filter((d) => !dnf2.has(d.id));
-        classified2.forEach((d, pos) => {
-          if (pos < yd.sprint_points!.length) simPts[d.id] += yd.sprint_points![pos];
-        });
-      }
+        noisy
+          .filter((d) => !out.has(d.id))
+          .forEach((d, pos) => {
+            if (pos < scale.length) simPts[d.id] = (simPts[d.id] ?? 0) + scale[pos];
+          });
+      };
+      raced(rand, yd.gp_points);
+      if (sprint && yd.sprint_points) raced(mulberry32(hashSeed(`${seed}-sprint`)), yd.sprint_points);
     }
     let champ = driverIds[0];
     driverIds.forEach((id) => {
@@ -403,9 +406,10 @@ export function buildRacePrediction(
   yd: YearData,
   year: number,
   round: number,
-  nSim = 6000
+  nSim = 6000,
+  useQualifying = true
 ): RacePrediction {
-  const snap = getRatingSnapshot(yd, round);
+  const snap = getRatingSnapshot(yd, round, useQualifying);
   const raceInfo = yd.rounds[round - 1];
   const { posProb, avgPoints } = simulateSingleRace(snap, yd.gp_points, nSim, `${year}-${round}-podium`);
 
@@ -438,7 +442,12 @@ export function buildRacePrediction(
     ? actualResultRaw.slice(0, 3).map((driverId, i) => ({ position: (i + 1) as 1 | 2 | 3, driverId }))
     : null;
 
-  const standingsAtRound = computeFullStandings(yd, round, driverPool, Math.max(300, Math.round(nSim / 8)));
+  const allDrivers = Object.keys(yd.driver_points_by_round);
+  const standingsAtRound = computeFullStandings(yd, round, allDrivers, Math.max(300, Math.round(nSim / 8)));
+  const winProbabilities = snap.driverIds
+    .map((id) => ({ driverId: id, probability: posProb[id][0] ?? 0 }))
+    .sort((a, b) => b.probability - a.probability)
+    .slice(0, 5);
   const championshipOdds = simulateSeasonChampionship(yd, round, Math.min(2500, nSim));
 
   return {
@@ -449,6 +458,10 @@ export function buildRacePrediction(
     actualResult,
     modelConfidence: podium[0]?.probability ?? 0,
     podium,
+    winProbabilities,
+    predictionMode: snap.mode,
+    qualifyingAvailable: hasQualifying(yd, round),
+    grid: snap.grid,
     driverPool,
     headToHead: computeHeadToHead(yd, round, snap, driverPool),
     pointsProgression: computePointsProgression(yd, round, driverPool.slice(0, 8), Math.max(300, Math.round(nSim / 8))),

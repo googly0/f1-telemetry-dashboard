@@ -2,6 +2,7 @@ import rawData from "./data/all_years.json";
 import type { AllYearsData } from "./types";
 
 export const ALL_YEARS = rawData as unknown as AllYearsData;
+export const MODEL_INFO = ALL_YEARS.model;
 
 export const YEARS = Object.keys(ALL_YEARS.years)
   .map(Number)

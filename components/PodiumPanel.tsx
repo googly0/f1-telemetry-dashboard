@@ -9,12 +9,16 @@ import { pct, cn } from "@/lib/utils";
 interface PodiumPanelProps {
   prediction: RacePrediction;
   onHover?: (variant: "select") => void;
+  useQualifying: boolean;
+  onToggleQualifying?: (v: boolean) => void;
 }
 
 const ORDER_DISPLAY = [1, 0, 2]; // show P2, P1, P3 left-to-right, podium-style
 
-export default function PodiumPanel({ prediction, onHover }: PodiumPanelProps) {
+export default function PodiumPanel({ prediction, onHover, useQualifying, onToggleQualifying }: PodiumPanelProps) {
   const { podium, driverTeam, driverNames, constructorNames, actualResult, isFutureRound, raceName } = prediction;
+  const { predictionMode, qualifyingAvailable, grid, winProbabilities } = prediction;
+  const raceDay = predictionMode === "race-day";
 
   return (
     <div className="glass-panel p-5 md:p-6 h-full">
@@ -32,6 +36,40 @@ export default function PodiumPanel({ prediction, onHover }: PodiumPanelProps) {
           )}
           {isFutureRound && <span className="ml-2 text-slate-500">NOT YET RACED</span>}
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+        <div className="inline-flex rounded-full border border-white/10 p-0.5 font-mono text-[10.5px]">
+          {[
+            { label: "PRE-QUALIFYING", value: false },
+            { label: "RACE-DAY (GRID SET)", value: true },
+          ].map((opt) => {
+            const active = opt.value === raceDay;
+            const disabled = opt.value && !qualifyingAvailable;
+            return (
+              <button
+                key={opt.label}
+                disabled={disabled}
+                onClick={() => onToggleQualifying?.(opt.value)}
+                title={disabled ? "Qualifying for this race hasn't happened yet" : undefined}
+                className={cn(
+                  "px-2.5 py-1 rounded-full transition-colors",
+                  active ? "bg-white/10 text-white" : "text-slate-500 hover:text-slate-300",
+                  disabled && "opacity-40 cursor-not-allowed hover:text-slate-500"
+                )}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="text-[10.5px] text-slate-500">
+          {raceDay
+            ? "Uses the starting grid, qualifying gap and sprint"
+            : qualifyingAvailable && !useQualifying
+            ? "What the model said before qualifying"
+            : "Grid not set yet: ratings and recent form only"}
+        </span>
       </div>
 
       <div className="grid grid-cols-3 gap-3 items-end">
@@ -81,6 +119,9 @@ export default function PodiumPanel({ prediction, onHover }: PodiumPanelProps) {
               <div className="label-mono mt-1" style={{ color: hex }}>
                 {teamName}
               </div>
+              {raceDay && grid[entry.driverId] != null && (
+                <div className="font-mono text-[10.5px] text-slate-500 mt-1">Starts P{grid[entry.driverId]}</div>
+              )}
 
               <div
                 className="mt-3 flex items-center gap-1.5 px-2.5 py-1 rounded-full border font-mono text-[11px] font-semibold"
@@ -112,6 +153,25 @@ export default function PodiumPanel({ prediction, onHover }: PodiumPanelProps) {
             </motion.div>
           );
         })}
+      </div>
+
+      <div className="mt-4 pt-3 border-t border-white/5">
+        <div className="label-mono mb-2">MOST LIKELY WINNERS</div>
+        <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+          {winProbabilities.map((w, i) => {
+            const won = actualResult?.[0]?.driverId === w.driverId;
+            return (
+              <span key={w.driverId} className="font-mono text-[11px] text-slate-400">
+                <span className="text-slate-600">{i + 1}.</span>{" "}
+                <span className={cn(won ? "text-team-mercedes" : "text-slate-200")}>
+                  {driverCode(driverNames[w.driverId] ?? w.driverId)}
+                </span>{" "}
+                {pct(w.probability, 0)}
+                {won && " ✓"}
+              </span>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
